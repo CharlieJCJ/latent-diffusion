@@ -3,7 +3,7 @@ model:
   target: ldm.models.autoencoder.AutoencoderKL
   params:
     monitor: "val/rec_loss"
-    embed_dim: 3
+    embed_dim: 64
     lossconfig:
       target: ldm.modules.losses.LPIPSWithDiscriminator
       params:
@@ -13,31 +13,29 @@ model:
 
     ddconfig:
       double_z: True
-      z_channels: 3
+      z_channels: 64
       resolution: 256
       in_channels: 3
       out_ch: 3
       ch: 128
-      ch_mult: [1, 2, 4] # num_down = len(ch_mult)-1
+      ch_mult: [1, 1, 2, 2, 4, 4] # num_down = len(ch_mult)-1
       num_res_blocks: 2
-      attn_resolutions: []
+      attn_resolutions: [16, 8]
       dropout: 0.0
 
 data:
   target: main.DataModuleFromConfig
   params:
     batch_size: 2
-    wrap: True
+    wrap: false
     train:
-      target: ldm.data.imagenet.ImageNetSRTrain
+      target: taming.data.faceshq.FFHQTrain
       params:
         size: 256
-        degradation: pil_nearest
     validation:
-      target: ldm.data.imagenet.ImageNetSRValidation
+      target: taming.data.faceshq.FFHQValidation
       params:
         size: 256
-        degradation: pil_nearest
 
 lightning:
   callbacks:

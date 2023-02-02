@@ -24,6 +24,7 @@ from ldm.modules.distributions.distributions import normal_kl, DiagonalGaussianD
 from ldm.models.autoencoder import VQModelInterface, IdentityFirstStage, AutoencoderKL
 from ldm.modules.diffusionmodules.util import make_beta_schedule, extract_into_tensor, noise_like
 from ldm.models.diffusion.ddim import DDIMSampler
+from torch.nn.modules.upsampling import Upsample
 
 
 __conditioning_keys__ = {'concat': 'c_concat',
@@ -277,6 +278,8 @@ class DDPM(pl.LightningModule):
                 extract_into_tensor(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape) * noise)
 
     def get_loss(self, pred, target, mean=True):
+        # print("LOSS PRED:", pred.shape)
+        # print("LOSS PRED:", target.shape)
         if self.loss_type == 'l1':
             loss = (target - pred).abs()
             if mean:
@@ -325,7 +328,6 @@ class DDPM(pl.LightningModule):
         # assert h == img_size and w == img_size, f'height and width of image must be {img_size}'
         t = torch.randint(0, self.num_timesteps, (x.shape[0],), device=self.device).long()
         return self.p_losses(x, t, *args, **kwargs)
-
     def get_input(self, batch, k):
         x = batch[k]
         if len(x.shape) == 3:
@@ -420,7 +422,7 @@ class DDPM(pl.LightningModule):
         opt = torch.optim.AdamW(params, lr=lr)
         return opt
 
-
+# Superresolution uses this. (DDPM is a parent class, passing conditioning_key into superresolution)
 class LatentDiffusion(DDPM):
     """main class"""
     def __init__(self,
@@ -440,7 +442,7 @@ class LatentDiffusion(DDPM):
         assert self.num_timesteps_cond <= kwargs['timesteps']
         # for backwards compatibility after implementation of DiffusionWrapper
         if conditioning_key is None:
-            conditioning_key = 'concat' if concat_mode else 'crossattn'
+            conditioning_key = 'concat' if concat_mode else 'crossattn' # Here is where we set conditioning key to concat
         if cond_stage_config == '__is_unconditional__':
             conditioning_key = None
         ckpt_path = kwargs.pop("ckpt_path", None)
@@ -548,7 +550,7 @@ class LatentDiffusion(DDPM):
             raise NotImplementedError(f"encoder_posterior of type '{type(encoder_posterior)}' not yet implemented")
         return self.scale_factor * z
 
-    def get_learned_conditioning(self, c):
+    def get_learned_conditioning(self, c): # XXX called by conditing stage, look at previous more detailed comments
         if self.cond_stage_forward is None:
             if hasattr(self.cond_stage_model, 'encode') and callable(self.cond_stage_model.encode):
                 c = self.cond_stage_model.encode(c)
@@ -653,17 +655,27 @@ class LatentDiffusion(DDPM):
     @torch.no_grad()
     def get_input(self, batch, k, return_first_stage_outputs=False, force_c_encode=False,
                   cond_key=None, return_original_cond=False, bs=None):
+        # print("GET_INPUT: check cond_key and conditioning_key", cond_key, self.model.conditioning_key)
+        # x is the input
+        # c is the conditioning input
         x = super().get_input(batch, k)
         if bs is not None:
             x = x[:bs]
         x = x.to(self.device)
-        encoder_posterior = self.encode_first_stage(x)
-        z = self.get_first_stage_encoding(encoder_posterior).detach()
+        encoder_posterior = self.encode_first_stage(x)  # XXX encoder posterior
 
+        # For implementing the baseline (Charlie proposed), if the LDM is the header (first cascaded) LDM,
+        # then we pass in higher resolution encoded feature vector as the encoder posterior.
+        # For example, we pass in conditional feature vector as 16x16 encoded vector, and the encoder_posterior
+        # should be 64x64 encoded vector. 
+
+        z = self.get_first_stage_encoding(encoder_posterior).detach() # XXX sample vectors from posterior distribution.
+        # print("GET_INPUT: z dim in get_input", z.shape)
+        # XXX look at here
         if self.model.conditioning_key is not None:
             if cond_key is None:
                 cond_key = self.cond_stage_key
-            if cond_key != self.first_stage_key:
+            if cond_key != self.first_stage_key: # cond_key is different from first_stage_key
                 if cond_key in ['caption', 'coordinates_bbox']:
                     xc = batch[cond_key]
                 elif cond_key == 'class_label':
@@ -672,10 +684,13 @@ class LatentDiffusion(DDPM):
                     xc = super().get_input(batch, cond_key).to(self.device)
             else:
                 xc = x
+
+            # Modify the conditioning information, instead of the lower resolution image, we pass in 
+            # the lower resolution image passed through an encoder from an autoencoder (trained on LR images). 
             if not self.cond_stage_trainable or force_c_encode:
                 if isinstance(xc, dict) or isinstance(xc, list):
                     # import pudb; pudb.set_trace()
-                    c = self.get_learned_conditioning(xc)
+                    c = self.get_learned_conditioning(xc) # XXX where condition comes from !, it's passing through \tau from model
                 else:
                     c = self.get_learned_conditioning(xc.to(self.device))
             else:
@@ -694,12 +709,23 @@ class LatentDiffusion(DDPM):
             if self.use_positional_encodings:
                 pos_x, pos_y = self.compute_latent_shifts(batch)
                 c = {'pos_x': pos_x, 'pos_y': pos_y}
+        # print("GET_INPUT: z, c:", z.shape, c.shape)
+
+        # # todo: upsample c from 32x32 to 64x64 (will do later)
+        # m = Upsample(scale_factor=2, mode='bilinear')
+        # c_upsampled = m(c) # if c is 32x32, c_upsampled is 64x64
+        # encoder_posterior_c = self.encode_first_stage(c_upsampled)  # XXX encoder posterior for c_upsampled
+        # c_encoded = self.get_first_stage_encoding(encoder_posterior_c).detach() # XXX sample vectors from posterior distribution.
+        # # print("GET_INPUT: c_encoded dim in get_input", c_encoded.shape)
+        # print("GET_INPUT: z, c_encoded:", z.shape, c_encoded.shape)
+
         out = [z, c]
         if return_first_stage_outputs:
             xrec = self.decode_first_stage(z)
             out.extend([x, xrec])
         if return_original_cond:
             out.append(xc)
+        # print("GET_INPUT: end out dimension", len(out), out[0].shape, out[1].shape)
         return out
 
     @torch.no_grad()
@@ -863,6 +889,7 @@ class LatentDiffusion(DDPM):
             return self.first_stage_model.encode(x)
 
     def shared_step(self, batch, **kwargs):
+        # x, c -> dispatch `get_input`
         x, c = self.get_input(batch, self.first_stage_key)
         loss = self(x, c)
         return loss
@@ -912,8 +939,8 @@ class LatentDiffusion(DDPM):
             z = unfold(x_noisy)  # (bn, nc * prod(**ks), L)
             # Reshape to img shape
             z = z.view((z.shape[0], -1, ks[0], ks[1], z.shape[-1]))  # (bn, nc, ks[0], ks[1], L )
-            z_list = [z[:, :, :, :, i] for i in range(z.shape[-1])]
-
+            z_list = [z[:, :, :, :, i] for i in range(z.shape[-1])] # XXX ?
+            # print("APPLY_MODEL:", self.cond_stage_key)
             if self.cond_stage_key in ["image", "LR_image", "segmentation",
                                        'bbox_img'] and self.model.conditioning_key:  # todo check for completeness
                 c_key = next(iter(cond.keys()))  # get key
@@ -924,8 +951,8 @@ class LatentDiffusion(DDPM):
                 c = unfold(c)
                 c = c.view((c.shape[0], -1, ks[0], ks[1], c.shape[-1]))  # (bn, nc, ks[0], ks[1], L )
 
-                cond_list = [{c_key: [c[:, :, :, :, i]]} for i in range(c.shape[-1])]
-
+                cond_list = [{c_key: [c[:, :, :, :, i]]} for i in range(c.shape[-1])] # XXX cond_list is here where we pass in as `c_concat`
+                # print("COND_LIST: in `apply model`", cond_list)
             elif self.cond_stage_key == 'coordinates_bbox':
                 assert 'original_image_size' in self.split_input_params, 'BoudingBoxRescaling is missing original_image_size'
 
@@ -972,7 +999,7 @@ class LatentDiffusion(DDPM):
                 cond_list = [cond for i in range(z.shape[-1])]  # Todo make this more efficient
 
             # apply model by loop over crops
-            output_list = [self.model(z_list[i], t, **cond_list[i]) for i in range(z.shape[-1])]
+            output_list = [self.model(z_list[i], t, **cond_list[i]) for i in range(z.shape[-1])] # XXX applied self.model, i.e. diffusionwrapper
             assert not isinstance(output_list[0],
                                   tuple)  # todo cant deal with multiple model outputs check this never happens
 
@@ -1023,11 +1050,10 @@ class LatentDiffusion(DDPM):
             target = noise
         else:
             raise NotImplementedError()
-
         loss_simple = self.get_loss(model_output, target, mean=False).mean([1, 2, 3])
         loss_dict.update({f'{prefix}/loss_simple': loss_simple.mean()})
 
-        logvar_t = self.logvar[t].to(self.device)
+        logvar_t = self.logvar[t.cpu()].to(self.device)
         loss = loss_simple / torch.exp(logvar_t) + logvar_t
         # loss = loss_simple / torch.exp(self.logvar) + self.logvar
         if self.learn_logvar:
@@ -1391,7 +1417,7 @@ class LatentDiffusion(DDPM):
         x = 2. * (x - x.min()) / (x.max() - x.min()) - 1.
         return x
 
-
+# Called by DDPM (hierarchy: LDM -> DDPM -> DiffusionWrapper)
 class DiffusionWrapper(pl.LightningModule):
     def __init__(self, diff_model_config, conditioning_key):
         super().__init__()
@@ -1402,7 +1428,12 @@ class DiffusionWrapper(pl.LightningModule):
     def forward(self, x, t, c_concat: list = None, c_crossattn: list = None):
         if self.conditioning_key is None:
             out = self.diffusion_model(x, t)
-        elif self.conditioning_key == 'concat':
+        elif self.conditioning_key == 'concat': # XXX check the dimensino for x and c_concat. 
+            # print("Peter wants x and c_concat's shape", x.shape, c_concat[0].shape)
+            
+            print("SUCCESS IN CONCAT x:s ", x.shape)
+            print("SUCCESS IN CONCAT c_concat: ", c_concat[0].shape)
+            # print("SUCCESS IN CONCAT: ", xc.shape)
             xc = torch.cat([x] + c_concat, dim=1)
             out = self.diffusion_model(xc, t)
         elif self.conditioning_key == 'crossattn':

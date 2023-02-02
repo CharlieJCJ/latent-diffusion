@@ -1,36 +1,35 @@
+# from 64 -> 256 ffhq config (adapted from bsr_sr, official source config superresolution)
 model:
-  base_learning_rate: 2.0e-06
+  base_learning_rate: 1.0e-06
   target: ldm.models.diffusion.ddpm.LatentDiffusion
   params:
     linear_start: 0.0015
-    linear_end: 0.0195
-    num_timesteps_cond: 1
-    log_every_t: 200
-    timesteps: 1000
+    linear_end: 0.0155
+    log_every_t: 100
+    timesteps: 1000 # original 1000
+    loss_type: l2
     first_stage_key: image
+    cond_stage_key: LR_image
     image_size: 64
     channels: 3
-    monitor: val/loss_simple_ema
+    cond_stage_trainable: false
+    concat_mode: true
+    monitor: val/loss
     unet_config:
       target: ldm.modules.diffusionmodules.openaimodel.UNetModel
       params:
         image_size: 64
-        in_channels: 3
-        out_channels: 3
-        model_channels: 224
+        in_channels: 6 # different from unconditional generation, where in_channels = 3
+        out_channels: 3 # pass into decoder
+        model_channels: 160
         attention_resolutions:
-          # note: this isn\t actually the resolution but
-          # the downsampling factor, i.e. this corresnponds to
-          # attention on spatial resolution 8,16,32, as the
-          # spatial reolution of the latents is 64 for f4
+          - 16
           - 8
-          - 4
-          - 2
         num_res_blocks: 2
         channel_mult:
           - 1
           - 2
-          - 3
+          - 2
           - 4
         num_head_channels: 32
     first_stage_config:
@@ -39,6 +38,7 @@ model:
         embed_dim: 3
         n_embed: 8192
         ckpt_path: /home/zhren/Charlie/latent-diffusion/models/first_stage_models/vq-f4/model.ckpt
+        monitor: val/rec_loss
         ddconfig:
           double_z: false
           z_channels: 3
@@ -55,30 +55,29 @@ model:
           dropout: 0.0
         lossconfig:
           target: torch.nn.Identity
-    cond_stage_config: __is_unconditional__
+    cond_stage_config:
+      target: torch.nn.Identity
 data:
   target: main.DataModuleFromConfig
   params:
-    batch_size: 2
-    num_workers: 42
+    batch_size: 4
+    num_workers: 5
     wrap: false
     train:
-      target: taming.data.faceshq.FFHQTrain
+      target: taming.data.ffhq.FFHQSRTrain
       params:
         size: 256
+        degradation: bsrgan_light
+        downscale_f: 4
+        min_crop_f: 0.5
+        max_crop_f: 1.0
+        random_crop: true
     validation:
-      target: taming.data.faceshq.FFHQValidation
+      target: taming.data.ffhq.FFHQSRValidation
       params:
         size: 256
-
-lightning:
-  callbacks:
-    image_logger:
-      target: main.ImageLogger
-      params:
-        batch_frequency: 5000
-        max_images: 8
-        increase_log_steps: False
-
-  trainer:
-    benchmark: True
+        degradation: bsrgan_light
+        downscale_f: 4
+        min_crop_f: 0.5
+        max_crop_f: 1.0
+        random_crop: true
