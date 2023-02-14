@@ -3,7 +3,7 @@ from ldm.util import instantiate_from_config
 import torch
 import os
 # todo ?
-from google.colab import files
+# from google.colab import files
 from IPython.display import Image as ipyimg
 import ipywidgets as widgets
 from PIL import Image
@@ -14,7 +14,7 @@ from ldm.models.diffusion.ddim import DDIMSampler
 from ldm.util import ismap
 import time
 from omegaconf import OmegaConf
-
+import cv2
 
 def download_models(mode):
 
@@ -61,11 +61,12 @@ def get_local_model(path_conf, path_ckpt):
     model, step = load_model_from_config(config, path_ckpt)
     return model
 
-def get_custom_cond(mode):
+def get_custom_cond(mode, uploaded_img):
     dest = "data/example_conditioning" # FIXME: where to run inference code?
                                         # 把uploaded的图片放到这个文件夹下，改一个名字
     if mode == "superresolution":
-        uploaded_img = files.upload()
+        # uploaded_img = files.upload()
+        # filename = next(iter(uploaded_img))
         filename = next(iter(uploaded_img))
         name, filetype = filename.split(".") # todo assumes just one dot in name !
         os.rename(f"{filename}", f"{dest}/{mode}/custom_{name}.{filetype}")
@@ -108,21 +109,40 @@ def select_cond_path(mode):
     selected_path = os.path.join(path, selected.value)
     return selected_path
 
-
-def get_cond(mode, selected_path):
+from ldm.modules.image_degradation.bsrgan import degradation_bsrgan_variant as degradation_fn_bsr
+from ldm.modules.image_degradation.bsrgan import partial
+def get_cond(mode, selected_path, up_f=4, sf = 32, downsample = True, img_idx = 1):
     example = dict()
     if mode == "superresolution":
-        up_f = 4
-        visualize_cond_img(selected_path)
+        # up_f = 4
+        # up_f = 2
+        # visualize_cond_img(selected_path) # turn off for now
 
-        c = Image.open(selected_path)
+        # c = Image.open(selected_path)
+        c = cv2.imread(selected_path)
+        c = cv2.cvtColor(c, cv2.COLOR_BGR2RGB)
+        origin = None
+        if downsample:
+            # origin = cv2.resize(c, (256, 256), cv2.INTER_CUBIC) # from 1024 to 256
+            c = cv2.resize(c, (32, 32), cv2.INTER_CUBIC) # from 1024 to 32
+            # c = cv2.resize(c, (64, 64), cv2.INTER_CUBIC) # from 1024 to 64 # FIXME: change to 32
+            # c = partial(degradation_fn_bsr, sf = sf)(c)["image"] # from 1024 to 32
+        display(Image.fromarray(c))
+        # Image.fromarray(c).save(f".\\data\\ffhq\\generated_img\\conditioned_img64\\conditioned-{img_idx}.png")
+        # Store original image downscale to 256
+        if origin is not None:
+            Image.fromarray(origin).save(f".\\data\\ffhq\\generated_img\\conditioned_img64\\origin-{img_idx}.png")
+        # print("raw image c shape:", c.size)
+        # c = c.convert("RGB") # three channel
         c = torch.unsqueeze(torchvision.transforms.ToTensor()(c), 0)
+        print("original c shape:", c.shape)
         c_up = torchvision.transforms.functional.resize(c, size=[up_f * c.shape[2], up_f * c.shape[3]], antialias=True)
         c_up = rearrange(c_up, '1 c h w -> 1 h w c')
         c = rearrange(c, '1 c h w -> 1 h w c')
         c = 2. * c - 1.
 
         c = c.to(torch.device("cuda"))
+        print(c.shape, c_up.shape)
         example["LR_image"] = c
         example["image"] = c_up
 
@@ -133,9 +153,9 @@ def visualize_cond_img(path):
     display(ipyimg(filename=path))
 
 
-def run(model, selected_path, task, custom_steps, resize_enabled=False, classifier_ckpt=None, global_step=None):
+def run(model, selected_path, task, custom_steps, up_f, resize_enabled=False, classifier_ckpt=None, global_step=None, downsample = True, img_idx = 1):
 
-    example = get_cond(task, selected_path)
+    example = get_cond(task, selected_path, up_f, downsample = downsample, img_idx = img_idx)
 
     save_intermediate_vid = False
     n_runs = 1
@@ -151,6 +171,7 @@ def run(model, selected_path, task, custom_steps, resize_enabled=False, classifi
 
     height, width = example["image"].shape[1:3]
     split_input = height >= 128 and width >= 128
+    split_input = False
 
     if split_input:
         ks = 128

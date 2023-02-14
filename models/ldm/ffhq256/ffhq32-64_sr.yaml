@@ -3,6 +3,7 @@ model:
   base_learning_rate: 1.0e-06
   target: ldm.models.diffusion.ddpm.LatentDiffusion
   params:
+    ckpt_path: /home/zhren/Charlie/charlie-latent-diffusion/latent-diffusion/logs/2023-02-02T21-05-18_ffhq32-64_sr/checkpoints/epoch=000028.ckpt
     linear_start: 0.0015
     linear_end: 0.0155
     log_every_t: 100
@@ -35,7 +36,8 @@ model:
     first_stage_config:
       target: ldm.models.autoencoder.VQModelInterface
       params:
-        ckpt_path: /home/zhren/Charlie/charlie-latent-diffusion/latent-diffusion/logs/2023-01-31T21-11-20_vq-f2-64/checkpoints/epoch=000168.ckpt
+        ckpt_path: /home/zhren/Charlie/charlie-latent-diffusion/latent-diffusion/logs/2023-01-31T21-11-20_vq-f2-64/checkpoints/epoch=000168.ckpt # during training
+        # ckpt_path: ./trained_models/epoch=000168.ckpt
         embed_dim: 3
         n_embed: 8192
         monitor: val/rec_loss
@@ -59,7 +61,7 @@ model:
 data:
   target: main.DataModuleFromConfig
   params:
-    batch_size: 12
+    batch_size: 8
     num_workers: 5
     wrap: false
     train:
