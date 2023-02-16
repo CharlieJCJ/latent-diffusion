@@ -20,7 +20,7 @@ model:
     unet_config:
       target: ldm.modules.diffusionmodules.openaimodel.UNetModel
       params:
-        image_size: 64
+        image_size: 256
         in_channels: 6 # different from unconditional generation, where in_channels = 3
         out_channels: 3 # pass into decoder
         model_channels: 160
