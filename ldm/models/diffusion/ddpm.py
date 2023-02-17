@@ -1429,6 +1429,7 @@ class DiffusionWrapper(pl.LightningModule):
         # print("Diffusion model", self.diffusion_model)
 
     def forward(self, x, t, c_concat: list = None, c_crossattn: list = None):
+        print("Noise shape", x.shape)
         if self.conditioning_key is None:
             out = self.diffusion_model(x, t)
         elif self.conditioning_key == 'concat': # XXX check the dimensino for x and c_concat. 
